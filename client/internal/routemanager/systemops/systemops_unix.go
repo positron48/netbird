@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	nberrors "github.com/netbirdio/netbird/client/errors"
+	"github.com/netbirdio/netbird/client/internal/routemanager/vars"
 	"github.com/netbirdio/netbird/client/internal/statemanager"
 )
 
@@ -105,7 +106,47 @@ func (r *SysOps) FlushMarkedRoutes() error {
 }
 
 func (r *SysOps) addToRouteTable(prefix netip.Prefix, nexthop Nexthop) error {
+	// When adding to VPN interface, ensure any existing route on another interface is removed first.
+	// On macOS the route may already exist on a physical interface (e.g. en0); we move it to utun.
+	if nexthop.Intf != nil {
+		if err := r.ensureRouteOnInterface(prefix, nexthop); err == nil {
+			return nil // already on correct interface or we replaced it
+		}
+		// ErrRouteNotFound: no route yet, fall through to normal add
+	}
 	return r.routeSocket(unix.RTM_ADD, prefix, nexthop)
+}
+
+// ensureRouteOnInterface removes the existing route for prefix if it's on a different interface,
+// then adds it to nexthop (VPN). Returns nil if the route is now on nexthop.Intf (either was already or we replaced).
+// Returns vars.ErrRouteNotFound if there is no current route (caller will do normal add).
+func (r *SysOps) ensureRouteOnInterface(prefix netip.Prefix, nexthop Nexthop) error {
+	current, err := GetNextHop(prefix.Addr())
+	if err != nil {
+		if errors.Is(err, vars.ErrRouteNotFound) {
+			return vars.ErrRouteNotFound // no route yet, let normal add run
+		}
+		log.Warnf("could not get current route for %s: %v", prefix, err)
+		return err
+	}
+	if current.Intf != nil && current.Intf.Name == nexthop.Intf.Name {
+		log.Debugf("route for %s already on %s", prefix, nexthop.Intf.Name)
+		return nil
+	}
+	currentName := "?"
+	if current.Intf != nil {
+		currentName = current.Intf.Name
+	}
+	log.Infof("route for %s is on %s, moving to %s", prefix, currentName, nexthop.Intf.Name)
+	if err := r.routeSocket(unix.RTM_DELETE, prefix, current); err != nil {
+		log.Warnf("failed to remove route for %s from %s: %v", prefix, currentName, err)
+		return err
+	}
+	if err := r.routeSocket(unix.RTM_ADD, prefix, nexthop); err != nil {
+		log.Warnf("failed to add route for %s to %s: %v", prefix, nexthop.Intf.Name, err)
+		return err
+	}
+	return nil
 }
 
 func (r *SysOps) removeFromRouteTable(prefix netip.Prefix, nexthop Nexthop) error {
