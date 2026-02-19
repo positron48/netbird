@@ -48,3 +48,15 @@ jobs:
           args: release --clean --snapshot --config .goreleaser.release-fork.yaml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # В snapshot-режиме GoReleaser не публикует в Release — создаём релиз вручную
+      - name: Create GitHub Release and upload binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: snapshot-${{ github.run_number }}-${{ github.sha }}
+          name: Snapshot ${{ github.run_number }} (${{ github.sha }})
+          draft: false
+          generate_release_notes: true
+          files: dist/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
