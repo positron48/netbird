@@ -20,7 +20,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # Snapshot build: avoid fetching legacy non-semver snapshot tags,
+          # otherwise GoReleaser tries to parse current_tag and fails.
+          fetch-depth: 1
+          fetch-tags: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
