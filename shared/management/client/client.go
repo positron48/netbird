@@ -11,6 +11,7 @@ import (
 	"github.com/netbirdio/netbird/shared/management/proto"
 )
 
+// Client is the interface for the management service client.
 type Client interface {
 	io.Closer
 	Sync(ctx context.Context, sysInfo *system.Info, msgHandler func(msg *proto.SyncResponse) error) error
@@ -21,7 +22,11 @@ type Client interface {
 	GetDeviceAuthorizationFlow(serverKey wgtypes.Key) (*proto.DeviceAuthorizationFlow, error)
 	GetPKCEAuthorizationFlow(serverKey wgtypes.Key) (*proto.PKCEAuthorizationFlow, error)
 	GetNetworkMap(sysInfo *system.Info) (*proto.NetworkMap, error)
+	GetServerURL() string
 	IsHealthy() bool
 	SyncMeta(sysInfo *system.Info) error
 	Logout() error
+	CreateExpose(ctx context.Context, req ExposeRequest) (*ExposeResponse, error)
+	RenewExpose(ctx context.Context, domain string) error
+	StopExpose(ctx context.Context, domain string) error
 }

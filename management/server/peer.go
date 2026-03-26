@@ -249,7 +249,7 @@ func (am *DefaultAccountManager) UpdatePeer(ctx context.Context, accountID, user
 			if err != nil {
 				newLabel = ""
 			} else {
-				_, err := transaction.GetPeerIdByLabel(ctx, store.LockingStrengthNone, accountID, update.Name)
+				_, err := transaction.GetPeerIdByLabel(ctx, store.LockingStrengthNone, accountID, newLabel)
 				if err == nil {
 					newLabel = ""
 				}
@@ -493,7 +493,7 @@ func (am *DefaultAccountManager) DeletePeer(ctx context.Context, accountID, peer
 	var settings *types.Settings
 	var eventsToStore []func()
 
-	serviceID, err := am.reverseProxyManager.GetServiceIDByTargetID(ctx, accountID, peerID)
+	serviceID, err := am.serviceManager.GetServiceIDByTargetID(ctx, accountID, peerID)
 	if err != nil {
 		return fmt.Errorf("failed to check if resource is used by service: %w", err)
 	}
