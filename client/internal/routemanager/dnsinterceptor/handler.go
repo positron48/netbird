@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -249,7 +251,7 @@ func (d *DnsInterceptor) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		r.MsgHdr.AuthenticatedData = true
 	}
 
-	upstream := fmt.Sprintf("%s:%d", upstreamIP.String(), uint16(d.forwarderPort.Load()))
+	upstream := net.JoinHostPort(upstreamIP.String(), strconv.FormatUint(uint64(d.forwarderPort.Load()), 10))
 	ctx, cancel := context.WithTimeout(context.Background(), dnsTimeout)
 	defer cancel()
 
@@ -350,6 +352,11 @@ func (d *DnsInterceptor) writeMsg(w dns.ResponseWriter, r *dns.Msg, logger *log.
 			if err := d.updateDomainPrefixes(resolvedDomain, originalDomain, newPrefixes, logger); err != nil {
 				logger.Errorf("failed to update domain prefixes: %v", err)
 			}
+
+			// Allow time for route changes to be applied before sending
+			// the DNS response (relevant on iOS where setTunnelNetworkSettings
+			// is asynchronous).
+			waitForRouteSettlement(logger)
 
 			d.replaceIPsInDNSResponse(r, newPrefixes, logger)
 		}
