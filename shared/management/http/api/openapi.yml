@@ -89,6 +89,10 @@ tags:
   - name: Event Streaming Integrations
     description: Manage event streaming integrations.
     x-cloud-only: true
+  - name: Notifications
+    description: Manage notification channels for account event alerts.
+    x-cloud-only: true
+
 
 components:
   schemas:
@@ -326,6 +330,16 @@ components:
           type: string
           format: cidr
           example: 100.64.0.0/16
+        peer_expose_enabled:
+          description: Enables or disables peer expose. If enabled, peers can expose local services through the reverse proxy using the CLI.
+          type: boolean
+          example: false
+        peer_expose_groups:
+          description: Limits which peer groups are allowed to expose services. If empty, all peers are allowed when peer expose is enabled.
+          type: array
+          items:
+            type: string
+            example: ch8i4ug6lnn4g9hqv7m0
         extra:
           $ref: '#/components/schemas/AccountExtraSettings'
         lazy_connection_enabled:
@@ -337,6 +351,10 @@ components:
           description: Set Clients auto-update version. "latest", "disabled", or a specific version (e.g "0.50.1")
           type: string
           example: "0.51.2"
+        auto_update_always:
+          description: When true, updates are installed automatically in the background. When false, updates require user interaction from the UI.
+          type: boolean
+          example: false
         embedded_idp_enabled:
           description: Indicates whether the embedded identity provider (Dex) is enabled for this account. This is a read-only field.
           type: boolean
@@ -353,6 +371,8 @@ components:
         - peer_inactivity_expiration_enabled
         - peer_inactivity_expiration
         - regular_users_view_blocked
+        - peer_expose_enabled
+        - peer_expose_groups
     AccountExtraSettings:
       type: object
       properties:
@@ -2810,6 +2830,24 @@ components:
           type: string
           description: "City name from geolocation"
           example: "San Francisco"
+        subdivision_code:
+          type: string
+          description: "First-level administrative subdivision ISO code (e.g. state/province)"
+          example: "CA"
+        bytes_upload:
+          type: integer
+          format: int64
+          description: "Bytes uploaded (request body size)"
+          example: 1024
+        bytes_download:
+          type: integer
+          format: int64
+          description: "Bytes downloaded (response body size)"
+          example: 8192
+        protocol:
+          type: string
+          description: "Protocol type: http, tcp, or udp"
+          example: "http"
       required:
         - id
         - service_id
@@ -2819,6 +2857,8 @@ components:
         - path
         - duration_ms
         - status_code
+        - bytes_upload
+        - bytes_download
     ProxyAccessLogsResponse:
       type: object
       properties:
@@ -2920,12 +2960,32 @@ components:
         id:
           type: string
           description: Service ID
+          example: "cs8i4ug6lnn4g9hqv7mg"
         name:
           type: string
           description: Service name
+          example: "myapp.example.netbird.app"
         domain:
           type: string
           description: Domain for the service
+          example: "myapp.example.netbird.app"
+        mode:
+          type: string
+          description: Service mode. "http" for L7 reverse proxy, "tcp"/"udp"/"tls" for L4 passthrough.
+          enum: [http, tcp, udp, tls]
+          default: http
+          example: "http"
+        listen_port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          description: Port the proxy listens on (L4/TLS only)
+          example: 8443
+        port_auto_assigned:
+          type: boolean
+          description: Whether the listen port was auto-assigned
+          readOnly: true
+          example: false
         proxy_cluster:
           type: string
           description: The proxy cluster handling this service (derived from domain)
@@ -2938,14 +2998,24 @@ components:
         enabled:
           type: boolean
           description: Whether the service is enabled
+          example: true
+        terminated:
+          type: boolean
+          description: Whether the service has been terminated. Terminated services cannot be updated. Services that violate the Terms of Service will be terminated.
+          readOnly: true
+          example: false
         pass_host_header:
           type: boolean
           description: When true, the original client Host header is passed through to the backend instead of being rewritten to the backend's address
+          example: false
         rewrite_redirects:
           type: boolean
           description: When true, Location headers in backend responses are rewritten to replace the backend address with the public-facing domain
+          example: false
         auth:
           $ref: '#/components/schemas/ServiceAuthConfig'
+        access_restrictions:
+          $ref: '#/components/schemas/AccessRestrictions'
         meta:
           $ref: '#/components/schemas/ServiceMeta'
       required:
@@ -2989,9 +3059,23 @@ components:
         name:
           type: string
           description: Service name
+          example: "myapp.example.netbird.app"
         domain:
           type: string
           description: Domain for the service
+          example: "myapp.example.netbird.app"
+        mode:
+          type: string
+          description: Service mode. "http" for L7 reverse proxy, "tcp"/"udp"/"tls" for L4 passthrough.
+          enum: [http, tcp, udp, tls]
+          default: http
+          example: "http"
+        listen_port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          description: Port the proxy listens on (L4/TLS only). Set to 0 for auto-assignment.
+          example: 5432
         targets:
           type: array
           items:
@@ -3001,46 +3085,94 @@ components:
           type: boolean
           description: Whether the service is enabled
           default: true
+          example: true
         pass_host_header:
           type: boolean
           description: When true, the original client Host header is passed through to the backend instead of being rewritten to the backend's address
+          example: false
         rewrite_redirects:
           type: boolean
           description: When true, Location headers in backend responses are rewritten to replace the backend address with the public-facing domain
+          example: false
         auth:
           $ref: '#/components/schemas/ServiceAuthConfig'
+        access_restrictions:
+          $ref: '#/components/schemas/AccessRestrictions'
       required:
         - name
         - domain
-        - targets
-        - auth
         - enabled
+    ServiceTargetOptions:
+      type: object
+      properties:
+        skip_tls_verify:
+          type: boolean
+          description: Skip TLS certificate verification for this backend
+          example: false
+        request_timeout:
+          type: string
+          description: Per-target response timeout as a Go duration string (e.g. "30s", "2m")
+          example: "30s"
+        path_rewrite:
+          type: string
+          description: Controls how the request path is rewritten before forwarding to the backend. Default strips the matched prefix. "preserve" keeps the full original request path.
+          enum: [preserve]
+          example: "preserve"
+        custom_headers:
+          type: object
+          description: Extra headers sent to the backend. Hop-by-hop and proxy-managed headers (Host, Connection, Transfer-Encoding, etc.) are rejected.
+          propertyNames:
+            type: string
+            pattern: '^[!#$%&''*+.^_`|~0-9A-Za-z-]+$'
+          additionalProperties:
+            type: string
+            pattern: '^[^\r\n]*$'
+          example: {"X-Custom-Header": "value"}
+        proxy_protocol:
+          type: boolean
+          description: Send PROXY Protocol v2 header to this backend (TCP/TLS only)
+          example: false
+        session_idle_timeout:
+          type: string
+          description: Idle timeout before a UDP session is reaped, as a Go duration string (e.g. "30s", "2m").
+          example: "2m"
     ServiceTarget:
       type: object
       properties:
         target_id:
           type: string
           description: Target ID
+          example: "cs8i4ug6lnn4g9hqv7mg"
         target_type:
           type: string
-          description: Target type (e.g., "peer", "resource")
-          enum: [peer, resource]
+          description: Target type
+          enum: [peer, host, domain, subnet]
+          example: "subnet"
         path:
           type: string
-          description: URL path prefix for this target
+          description: URL path prefix for this target (HTTP only)
+          example: "/"
         protocol:
           type: string
           description: Protocol to use when connecting to the backend
-          enum: [http, https]
+          enum: [http, https, tcp, udp]
+          example: "http"
         host:
           type: string
           description: Backend ip or domain for this target
+          example: "10.10.0.1"
         port:
           type: integer
-          description: Backend port for this target. Use 0 or omit to use the scheme default (80 for http, 443 for https).
+          minimum: 1
+          maximum: 65535
+          description: Backend port for this target
+          example: 8080
         enabled:
           type: boolean
           description: Whether this target is enabled
+          example: true
+        options:
+          $ref: '#/components/schemas/ServiceTargetOptions'
       required:
         - target_id
         - target_type
@@ -3058,15 +3190,73 @@ components:
           $ref: '#/components/schemas/BearerAuthConfig'
         link_auth:
           $ref: '#/components/schemas/LinkAuthConfig'
+        header_auths:
+          type: array
+          items:
+            $ref: '#/components/schemas/HeaderAuthConfig'
+    HeaderAuthConfig:
+      type: object
+      description: Static header-value authentication. The proxy checks that the named header matches the configured value.
+      properties:
+        enabled:
+          type: boolean
+          description: Whether header auth is enabled
+          example: true
+        header:
+          type: string
+          description: HTTP header name to check (e.g. "Authorization", "X-API-Key")
+          example: "X-API-Key"
+        value:
+          type: string
+          description: Expected header value. For Basic auth use "Basic base64(user:pass)". For Bearer use "Bearer token". Cleared in responses.
+          example: "my-secret-api-key"
+      required:
+        - enabled
+        - header
+        - value
+    AccessRestrictions:
+      type: object
+      description: Connection-level access restrictions based on IP address or geography. Applies to both HTTP and L4 services.
+      properties:
+        allowed_cidrs:
+          type: array
+          items:
+            type: string
+            format: cidr
+            example: "192.168.1.0/24"
+          description: CIDR allowlist. If non-empty, only IPs matching these CIDRs are allowed.
+        blocked_cidrs:
+          type: array
+          items:
+            type: string
+            format: cidr
+            example: "10.0.0.0/8"
+          description: CIDR blocklist. Connections from these CIDRs are rejected. Evaluated after allowed_cidrs.
+        allowed_countries:
+          type: array
+          items:
+            type: string
+            pattern: '^[a-zA-Z]{2}$'
+            example: "US"
+          description: ISO 3166-1 alpha-2 country codes to allow. If non-empty, only these countries are permitted.
+        blocked_countries:
+          type: array
+          items:
+            type: string
+            pattern: '^[a-zA-Z]{2}$'
+            example: "DE"
+          description: ISO 3166-1 alpha-2 country codes to block.
     PasswordAuthConfig:
       type: object
       properties:
         enabled:
           type: boolean
           description: Whether password auth is enabled
+          example: true
         password:
           type: string
           description: Auth password
+          example: "s3cret"
       required:
         - enabled
         - password
@@ -3076,9 +3266,11 @@ components:
         enabled:
           type: boolean
           description: Whether PIN auth is enabled
+          example: false
         pin:
           type: string
           description: PIN value
+          example: "1234"
       required:
         - enabled
         - pin
@@ -3088,10 +3280,12 @@ components:
         enabled:
           type: boolean
           description: Whether bearer auth is enabled
+          example: true
         distribution_groups:
           type: array
           items:
             type: string
+            example: "ch8i4ug6lnn4g9hqv7mg"
           description: List of group IDs that can use bearer auth
       required:
         - enabled
@@ -3101,6 +3295,7 @@ components:
         enabled:
           type: boolean
           description: Whether link auth is enabled
+          example: false
       required:
         - enabled
     ProxyCluster:
@@ -3131,17 +3326,29 @@ components:
         id:
           type: string
           description: Domain ID
+          example: "ds8i4ug6lnn4g9hqv7mg"
         domain:
           type: string
           description: Domain name
+          example: "example.netbird.app"
         validated:
           type: boolean
           description: Whether the domain has been validated
+          example: true
         type:
           $ref: '#/components/schemas/ReverseProxyDomainType'
         target_cluster:
           type: string
           description: The proxy cluster this domain is validated against (only for custom domains)
+          example: "eu.proxy.netbird.io"
+        supports_custom_ports:
+          type: boolean
+          description: Whether the cluster supports binding arbitrary TCP/UDP ports
+          example: true
+        require_subdomain:
+          type: boolean
+          description: Whether a subdomain label is required in front of this domain. When true, the domain cannot be used bare.
+          example: false
       required:
         - id
         - domain
@@ -3153,9 +3360,11 @@ components:
         domain:
           type: string
           description: Domain name
+          example: "myapp.example.com"
         target_cluster:
           type: string
           description: The proxy cluster this domain should be validated against
+          example: "eu.proxy.netbird.io"
       required:
         - domain
         - target_cluster
@@ -4185,6 +4394,123 @@ components:
           type: string
           description: The newly generated SCIM API token
           example: "nbs_F3f0d..."
+    NotificationChannelType:
+      type: string
+      description: The type of notification channel.
+      enum:
+        - email
+        - webhook
+      example: "email"
+    NotificationEventType:
+      type: string
+      description: |
+        An activity event type code. See `GET /api/integrations/notifications/types` for the full list
+        of supported event types and their human-readable descriptions.
+      example: "user.join"
+    EmailTarget:
+      type: object
+      description: Target configuration for email notification channels.
+      properties:
+        emails:
+          type: array
+          description: List of email addresses to send notifications to.
+          minItems: 1
+          items:
+            type: string
+            format: email
+          example: [ "admin@example.com", "ops@example.com" ]
+      required:
+        - emails
+    WebhookTarget:
+      type: object
+      description: Target configuration for webhook notification channels.
+      properties:
+        url:
+          type: string
+          format: uri
+          description: The webhook endpoint URL to send notifications to.
+          example: "https://hooks.example.com/netbird"
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Custom HTTP headers sent with each webhook request.
+            Values are write-only; in GET responses all values are masked.
+          example:
+            Authorization: "Bearer token"
+            X-Webhook-Secret: "secret"
+      required:
+        - url
+    NotificationChannelRequest:
+      type: object
+      description: Request body for creating or updating a notification channel.
+      properties:
+        type:
+          $ref: '#/components/schemas/NotificationChannelType'
+        target:
+          description: |
+            Channel-specific target configuration. The shape depends on the `type` field:
+            - `email`: requires an `EmailTarget` object
+            - `webhook`: requires a `WebhookTarget` object
+          oneOf:
+            - $ref: '#/components/schemas/EmailTarget'
+            - $ref: '#/components/schemas/WebhookTarget'
+        event_types:
+          type: array
+          description: List of activity event type codes this channel subscribes to.
+          items:
+            $ref: '#/components/schemas/NotificationEventType'
+          example: [ "user.join", "peer.user.add", "peer.login.expire" ]
+        enabled:
+          type: boolean
+          description: Whether this notification channel is active.
+          example: true
+      required:
+        - type
+        - event_types
+        - enabled
+    NotificationChannelResponse:
+      type: object
+      description: A notification channel configuration.
+      properties:
+        id:
+          type: string
+          description: Unique identifier of the notification channel.
+          readOnly: true
+          example: "ch8i4ug6lnn4g9hqv7m0"
+        type:
+          $ref: '#/components/schemas/NotificationChannelType'
+        target:
+          description: |
+            Channel-specific target configuration. The shape depends on the `type` field:
+            - `email`: an `EmailTarget` object
+            - `webhook`: a `WebhookTarget` object
+          oneOf:
+            - $ref: '#/components/schemas/EmailTarget'
+            - $ref: '#/components/schemas/WebhookTarget'
+        event_types:
+          type: array
+          description: List of activity event type codes this channel subscribes to.
+          items:
+            $ref: '#/components/schemas/NotificationEventType'
+          example: [ "user.join", "peer.user.add", "peer.login.expire" ]
+        enabled:
+          type: boolean
+          description: Whether this notification channel is active.
+          example: true
+      required:
+        - id
+        - type
+        - event_types
+        - enabled
+    NotificationTypeEntry:
+      type: object
+      description: A map of event type codes to their human-readable descriptions.
+      additionalProperties:
+        type: string
+      example:
+        user.join: "User joined"
     BypassResponse:
       type: object
       description: Response for bypassed peer operations.
@@ -4225,6 +4551,12 @@ components:
     requires_authentication:
       description: Requires authentication
       content: { }
+    conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   securitySchemes:
     BearerAuth:
       type: http
@@ -7410,6 +7742,20 @@ paths:
             maximum: 100
           description: Number of items per page (max 100)
         - in: query
+          name: sort_by
+          schema:
+            type: string
+            enum: [timestamp, url, host, path, method, status_code, duration, source_ip, user_id, auth_method, reason]
+            default: timestamp
+          description: Field to sort by (url sorts by host then path)
+        - in: query
+          name: sort_order
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort order (ascending or descending)
+        - in: query
           name: search
           schema:
             type: string
@@ -9555,6 +9901,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/reverse-proxies/clusters:
+    get:
+      summary: List available proxy clusters
+      description: Returns a list of available proxy clusters with their connection status
+      tags: [ Services ]
+      security:
+        - BearerAuth: [ ]
+        - TokenAuth: [ ]
+      responses:
+        '200':
+          description: A JSON Array of proxy clusters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProxyCluster'
+        '401':
+          "$ref": "#/components/responses/requires_authentication"
+        '403':
+          "$ref": "#/components/responses/forbidden"
+        '500':
+          "$ref": "#/components/responses/internal_error"
   /api/reverse-proxies/services:
     get:
       summary: List all Services
@@ -9604,29 +9973,8 @@ paths:
           "$ref": "#/components/responses/requires_authentication"
         '403':
           "$ref": "#/components/responses/forbidden"
-        '500':
-          "$ref": "#/components/responses/internal_error"
-  /api/reverse-proxies/clusters:
-    get:
-      summary: List available proxy clusters
-      description: Returns a list of available proxy clusters with their connection status
-      tags: [ Services ]
-      security:
-        - BearerAuth: [ ]
-        - TokenAuth: [ ]
-      responses:
-        '200':
-          description: A JSON Array of proxy clusters
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ProxyCluster'
-        '401':
-          "$ref": "#/components/responses/requires_authentication"
-        '403':
-          "$ref": "#/components/responses/forbidden"
+        '409':
+          "$ref": "#/components/responses/conflict"
         '500':
           "$ref": "#/components/responses/internal_error"
   /api/reverse-proxies/services/{serviceId}:
@@ -9696,6 +10044,8 @@ paths:
           "$ref": "#/components/responses/forbidden"
         '404':
           "$ref": "#/components/responses/not_found"
+        '409':
+          "$ref": "#/components/responses/conflict"
         '500':
           "$ref": "#/components/responses/internal_error"
     delete:
@@ -9828,6 +10178,175 @@ paths:
       responses:
         '202':
           description: Reverse proxy custom domain validation triggered
+        '400':
+          "$ref": "#/components/responses/bad_request"
+        '401':
+          "$ref": "#/components/responses/requires_authentication"
+        '403':
+          "$ref": "#/components/responses/forbidden"
+        '404':
+          "$ref": "#/components/responses/not_found"
+        '500':
+          "$ref": "#/components/responses/internal_error"
+  /api/integrations/notifications/types:
+    get:
+      tags:
+        - Notifications
+      summary: List Notification Event Types
+      description: |
+        Returns a map of all supported activity event type codes to their
+        human-readable descriptions. Use these codes when configuring
+        `event_types` on notification channels.
+      operationId: listNotificationEventTypes
+      responses:
+        '200':
+          description: A map of event type codes to descriptions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationTypeEntry'
+        '400':
+          "$ref": "#/components/responses/bad_request"
+        '401':
+          "$ref": "#/components/responses/requires_authentication"
+        '403':
+          "$ref": "#/components/responses/forbidden"
+        '404':
+          "$ref": "#/components/responses/not_found"
+        '500':
+          "$ref": "#/components/responses/internal_error"
+  /api/integrations/notifications/channels:
+    get:
+      tags:
+        - Notifications
+      summary: List Notification Channels
+      description: Retrieves all notification channels configured for the authenticated account.
+      operationId: listNotificationChannels
+      responses:
+        '200':
+          description: A list of notification channels.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationChannelResponse'
+        '400':
+          "$ref": "#/components/responses/bad_request"
+        '401':
+          "$ref": "#/components/responses/requires_authentication"
+        '403':
+          "$ref": "#/components/responses/forbidden"
+        '404':
+          "$ref": "#/components/responses/not_found"
+        '500':
+          "$ref": "#/components/responses/internal_error"
+    post:
+      tags:
+        - Notifications
+      summary: Create Notification Channel
+      description: |
+        Creates a new notification channel for the authenticated account.
+        Supported channel types are `email` and `webhook`.
+      operationId: createNotificationChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationChannelRequest'
+      responses:
+        '200':
+          description: Notification channel created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationChannelResponse'
+        '400':
+          "$ref": "#/components/responses/bad_request"
+        '401':
+          "$ref": "#/components/responses/requires_authentication"
+        '403':
+          "$ref": "#/components/responses/forbidden"
+        '404':
+          "$ref": "#/components/responses/not_found"
+        '500':
+          "$ref": "#/components/responses/internal_error"
+  /api/integrations/notifications/channels/{channelId}:
+    parameters:
+      - name: channelId
+        in: path
+        required: true
+        description: The unique identifier of the notification channel.
+        schema:
+          type: string
+          example: "ch8i4ug6lnn4g9hqv7m0"
+    get:
+      tags:
+        - Notifications
+      summary: Get Notification Channel
+      description: Retrieves a specific notification channel by its ID.
+      operationId: getNotificationChannel
+      responses:
+        '200':
+          description: Successfully retrieved the notification channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationChannelResponse'
+        '400':
+          "$ref": "#/components/responses/bad_request"
+        '401':
+          "$ref": "#/components/responses/requires_authentication"
+        '403':
+          "$ref": "#/components/responses/forbidden"
+        '404':
+          "$ref": "#/components/responses/not_found"
+        '500':
+          "$ref": "#/components/responses/internal_error"
+    put:
+      tags:
+        - Notifications
+      summary: Update Notification Channel
+      description: Updates an existing notification channel.
+      operationId: updateNotificationChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationChannelRequest'
+      responses:
+        '200':
+          description: Notification channel updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationChannelResponse'
+        '400':
+          "$ref": "#/components/responses/bad_request"
+        '401':
+          "$ref": "#/components/responses/requires_authentication"
+        '403':
+          "$ref": "#/components/responses/forbidden"
+        '404':
+          "$ref": "#/components/responses/not_found"
+        '500':
+          "$ref": "#/components/responses/internal_error"
+    delete:
+      tags:
+        - Notifications
+      summary: Delete Notification Channel
+      description: Deletes a notification channel by its ID.
+      operationId: deleteNotificationChannel
+      responses:
+        '200':
+          description: Notification channel deleted successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                example: { }
         '400':
           "$ref": "#/components/responses/bad_request"
         '401':
